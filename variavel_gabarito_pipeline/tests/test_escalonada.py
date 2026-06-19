@@ -1,5 +1,8 @@
 from pathlib import Path
 
+import pandas as pd
+
+from pipeline.domain.escalonada import find_escalonada_value
 from pipeline.core.paths import load_paths_config
 
 
@@ -28,3 +31,16 @@ def test_load_paths_config_resolves_relative_paths(tmp_path: Path) -> None:
     assert paths_config.values["raw_sources"]["escalonada"] == (
         tmp_path / "data" / "raw" / "escalonada"
     ).resolve()
+
+
+def test_find_escalonada_value_returns_matching_range() -> None:
+    escalonada = pd.DataFrame(
+        {
+            "FaixaDe": [0.0, 0.8, 0.9],
+            "FaixaAte": [0.799999, 0.899999, 0.999999],
+            "EscalaAtingida": [0.0, 0.7, 0.8],
+        }
+    )
+
+    assert find_escalonada_value(0.85, escalonada) == 0.7
+    assert find_escalonada_value(1.5, escalonada) is None

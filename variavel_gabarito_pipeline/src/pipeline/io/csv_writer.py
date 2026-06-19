@@ -8,9 +8,9 @@ import pandas as pd
 
 
 def write_csv(dataframe: pd.DataFrame, output_path: str | Path) -> Path:
-    """Escreve um DataFrame em CSV UTF-8 com separador virgula."""
+    """Escreve um DataFrame em CSV no padrao Excel/Power BI Brasil."""
 
     path = Path(output_path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    dataframe.to_csv(path, index=False, encoding="utf-8")
+    dataframe.to_csv(path, sep=";", encoding="utf-8-sig", index=False)
     return path

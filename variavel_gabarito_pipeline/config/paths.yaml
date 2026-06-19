@@ -11,6 +11,7 @@ raw_sources:
   agentes: data/raw/agentes
   supervisores: data/raw/supervisores
   aderencia_red: data/raw/aderencia_red
+  red_mes_rota: data/raw/red_mes_rota
   pesos: data/raw/pesos
   escalonada: data/raw/escalonada
   gabarito_validacao: data/raw/gabarito_validacao
