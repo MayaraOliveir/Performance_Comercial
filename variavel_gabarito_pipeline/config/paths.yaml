@@ -1,0 +1,24 @@
+project_root: ..
+
+data:
+  raw: data/raw
+  processed: data/processed
+  output: data/output
+
+raw_sources:
+  metas: data/raw/metas
+  indicadores: data/raw/indicadores
+  agentes: data/raw/agentes
+  supervisores: data/raw/supervisores
+  aderencia_red: data/raw/aderencia_red
+  pesos: data/raw/pesos
+  escalonada: data/raw/escalonada
+  gabarito_validacao: data/raw/gabarito_validacao
+
+processed:
+  staging: data/processed/staging
+  facts: data/processed/facts
+  dimensions: data/processed/dimensions
+  validation: data/processed/validation
+
+inventario_arquivos: data/processed/inventario_arquivos.csv

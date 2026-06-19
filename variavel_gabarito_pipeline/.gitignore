@@ -1,0 +1,46 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Environments
+.venv/
+venv/
+env/
+
+# Packaging
+build/
+dist/
+*.egg-info/
+
+# Excel temporary files
+~$*.xlsx
+~$*.xlsm
+~$*.xls
+
+# Pipeline generated data
+data/raw/**/*
+!data/raw/**/
+!data/raw/**/.gitkeep
+data/output/*
+!data/output/.gitkeep
+data/processed/*
+!data/processed/.gitkeep
+!data/processed/staging/
+data/processed/staging/*
+!data/processed/staging/.gitkeep
+!data/processed/facts/
+data/processed/facts/*
+!data/processed/facts/.gitkeep
+!data/processed/dimensions/
+data/processed/dimensions/*
+!data/processed/dimensions/.gitkeep
+!data/processed/validation/
+data/processed/validation/*
+!data/processed/validation/.gitkeep

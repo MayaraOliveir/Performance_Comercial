@@ -1,0 +1,5 @@
+figuras:
+  promotor_vendas:
+    nome: PROMOTOR DE VENDAS
+    ativo: true
+    kpis: []

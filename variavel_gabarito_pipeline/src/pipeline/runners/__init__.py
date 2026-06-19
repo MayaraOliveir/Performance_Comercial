@@ -1,0 +1,1 @@
+"""Entrypoints executaveis da pipeline."""
