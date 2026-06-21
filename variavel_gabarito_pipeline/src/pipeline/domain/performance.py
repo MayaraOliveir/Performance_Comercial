@@ -41,12 +41,12 @@ def calculate_weighted_achievement(performance: object, peso: object) -> float |
     return float(performance) * float(peso)
 
 
-def sum_ignoring_nulls(*values: object) -> float | None:
+def sum_ignoring_nulls(*values: object) -> float:
     """Soma valores ignorando nulos, como SOMA do Excel."""
 
     valid_values = [float(value) for value in values if not is_missing(value)]
     if not valid_values:
-        return None
+        return 0.0
     return sum(valid_values)
 
 

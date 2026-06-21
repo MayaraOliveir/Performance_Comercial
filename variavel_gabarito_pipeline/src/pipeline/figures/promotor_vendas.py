@@ -37,22 +37,36 @@ def run_promotor_calculation(paths_config: PathsConfig | None = None) -> list[Pa
     logger = configure_logger("pipeline.promotor_vendas")
 
     inputs = _load_inputs(paths_config)
-    final = build_promotor_final(
-        dim_rotas=inputs["dim_rotas"],
+    promotor_base = build_promotor_base(
+        estrutura_promotor=inputs["estrutura_promotor"],
         metas=inputs["metas"],
         indicadores=inputs["indicadores"],
+    )
+    facts_dir = paths_config.values["processed"]["facts"]
+    validation_dir = paths_config.values["processed"]["validation"]
+    promotor_base_path = write_csv(promotor_base, facts_dir / "fat_promotor_base.csv")
+    promotor_base = read_csv(promotor_base_path)
+
+    final = build_promotor_final(
+        promotor_base=promotor_base,
         aderencia_red=inputs["aderencia_red"],
         pesos=inputs["pesos"],
         escalonada=inputs["escalonada"],
     )
     calculo = build_promotor_calculo(final)
     diagnostico = summarize_diagnostics(final)
+    diagnostico_base = summarize_promotor_base(promotor_base)
+    validacao_path = validation_dir / "validacao_promotor_gabarito.csv"
+    validacao = read_csv(validacao_path) if validacao_path.exists() else None
+    diagnostico_fonte_rpt = summarize_fonte_rpt_promotor(final, validacao)
 
-    facts_dir = paths_config.values["processed"]["facts"]
     outputs = [
+        promotor_base_path,
         write_csv(calculo, facts_dir / "fat_promotor_calculo.csv"),
         write_csv(final, facts_dir / "fat_promotor_final.csv"),
         write_csv(diagnostico, facts_dir / "diag_promotor.csv"),
+        write_csv(diagnostico_base, validation_dir / "resumo_promotor_base.csv"),
+        write_csv(diagnostico_fonte_rpt, validation_dir / "resumo_fonte_rpt_promotor.csv"),
     ]
 
     logger.info(
@@ -61,27 +75,147 @@ def run_promotor_calculation(paths_config: PathsConfig | None = None) -> list[Pa
             "linhas_calculo": len(calculo),
             "linhas_final": len(final),
             "linhas_diagnostico": len(diagnostico),
+            "linhas_base": len(promotor_base),
         },
     )
     return outputs
 
 
-def build_promotor_final(
-    dim_rotas: pd.DataFrame,
+def build_promotor_base(
+    estrutura_promotor: pd.DataFrame,
     metas: pd.DataFrame,
     indicadores: pd.DataFrame,
+) -> pd.DataFrame:
+    """Monta a base auditavel de elegibilidade, metas e realizados do Promotor."""
+
+    base = _prepare_estrutura_base(estrutura_promotor)
+    base = base.merge(_build_meta_metrics(metas, "RED", "RED"), on="ChaveCentroRota", how="left")
+    base = base.merge(_build_meta_metrics(metas, "RPT", "RPT"), on="ChaveCentroRota", how="left")
+    base = base.merge(_build_realizado_metrics(indicadores, "RED", "RED"), on="ChaveCentroRota", how="left")
+    base = base.merge(_build_realizado_metrics(indicadores, "RPT", "RPT"), on="ChaveCentroRota", how="left")
+
+    if "FonteEstrutura" not in base.columns:
+        base["FonteEstrutura"] = "estrutura_mensal"
+    base["FonteMeta"] = [
+        _source_status("Metas", red, rpt)
+        for red, rpt in zip(base["MetaRED"], base["MetaRPT"], strict=False)
+    ]
+    base["FonteRealizado"] = [
+        _source_status("Indicadores", red, rpt)
+        for red, rpt in zip(base["RealizadoRED"], base["RealizadoRPT"], strict=False)
+    ]
+    base["FonteRealizadoRED"] = base["RealizadoRED"].map(
+        lambda value: _single_source_status("indicadores", value, "fonte_red_nao_encontrada")
+    )
+    base["FonteRealizadoRPT"] = base["RealizadoRPT"].map(
+        lambda value: _single_source_status("indicadores", value, "fonte_rpt_nao_encontrada")
+    )
+    return base
+
+
+def summarize_promotor_base(promotor_base: pd.DataFrame) -> pd.DataFrame:
+    """Resume cobertura de metas e realizados na base intermediaria."""
+
+    rows = [
+        {"Metrica": "total_rotas_estrutura_promotor", "Valor": len(promotor_base), "Categoria": pd.NA},
+        {"Metrica": "rotas_com_meta_red", "Valor": int(promotor_base["MetaRED"].notna().sum()), "Categoria": pd.NA},
+        {
+            "Metrica": "rotas_com_realizado_red",
+            "Valor": int(promotor_base["RealizadoRED"].notna().sum()),
+            "Categoria": pd.NA,
+        },
+        {"Metrica": "rotas_com_meta_rpt", "Valor": int(promotor_base["MetaRPT"].notna().sum()), "Categoria": pd.NA},
+        {
+            "Metrica": "rotas_com_realizado_rpt",
+            "Valor": int(promotor_base["RealizadoRPT"].notna().sum()),
+            "Categoria": pd.NA,
+        },
+        {
+            "Metrica": "rotas_sem_meta",
+            "Valor": int(promotor_base[["MetaRED", "MetaRPT"]].isna().all(axis=1).sum()),
+            "Categoria": pd.NA,
+        },
+        {
+            "Metrica": "rotas_sem_realizado",
+            "Valor": int(promotor_base[["RealizadoRED", "RealizadoRPT"]].isna().all(axis=1).sum()),
+            "Categoria": pd.NA,
+        },
+    ]
+    for source, count in promotor_base["FonteMeta"].value_counts(dropna=False).items():
+        rows.append({"Metrica": "quantidade_por_fonte_meta", "Valor": int(count), "Categoria": source})
+    for source, count in promotor_base["FonteRealizado"].value_counts(dropna=False).items():
+        rows.append({"Metrica": "quantidade_por_fonte_realizado", "Valor": int(count), "Categoria": source})
+    if "FonteRealizadoRPT" in promotor_base.columns:
+        for source, count in promotor_base["FonteRealizadoRPT"].value_counts(dropna=False).items():
+            rows.append({"Metrica": "quantidade_por_fonte_realizado_rpt", "Valor": int(count), "Categoria": source})
+    return pd.DataFrame(rows)
+
+
+def summarize_fonte_rpt_promotor(
+    final: pd.DataFrame,
+    validation: pd.DataFrame | None = None,
+) -> pd.DataFrame:
+    """Resume a disponibilidade da fonte oficial de RealizadoRPT."""
+
+    pa = final[final["TipoRota"] == "PA"].copy()
+    pa_sem_fonte = pa[pa["StatusRPT"] == "Sem fonte de realizado RPT"].copy()
+    rows = [
+        {"Metrica": "total_rotas_pa", "Valor": len(pa), "Categoria": pd.NA},
+        {"Metrica": "rotas_pa_com_meta_rpt", "Valor": int(pa["MetaRPT"].notna().sum()), "Categoria": pd.NA},
+        {
+            "Metrica": "rotas_pa_com_realizado_rpt_encontrado",
+            "Valor": int(pa["RealizadoRPT"].notna().sum()),
+            "Categoria": pd.NA,
+        },
+        {"Metrica": "rotas_pa_sem_fonte_realizado_rpt", "Valor": len(pa_sem_fonte), "Categoria": pd.NA},
+    ]
+    if "FonteRealizadoRPT" in final.columns:
+        for source, count in final["FonteRealizadoRPT"].value_counts(dropna=False).items():
+            rows.append({"Metrica": "fonte_realizado_rpt_por_quantidade", "Valor": int(count), "Categoria": source})
+
+    if validation is not None and not validation.empty:
+        explained = validation.merge(pa_sem_fonte[["ChaveCentroRota"]], on="ChaveCentroRota", how="inner")
+        explained = explained[explained["StatusComparacao"] != "OK"]
+        rows.append(
+            {
+                "Metrica": "impacto_estimado_diferencas_pa_sem_realizado_rpt",
+                "Valor": len(explained),
+                "Categoria": "Diferença por ausência de fonte RealizadoRPT",
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def build_promotor_final(
     aderencia_red: pd.DataFrame,
     pesos: pd.DataFrame,
     escalonada: pd.DataFrame,
+    promotor_base: pd.DataFrame | None = None,
+    dim_rotas: pd.DataFrame | None = None,
+    metas: pd.DataFrame | None = None,
+    indicadores: pd.DataFrame | None = None,
+    estrutura_promotor: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """Monta uma linha consolidada por rota elegivel de Promotor."""
 
-    base = dim_rotas[["ChaveCentroRota", "Centro", "Rota", "TipoRota"]].copy()
-    base["TipoRota"] = base["TipoRota"].fillna(base["Rota"].map(create_tipo_rota))
-    base = base.drop_duplicates(subset=["ChaveCentroRota"]).reset_index(drop=True)
+    if promotor_base is None:
+        if estrutura_promotor is not None:
+            promotor_base = build_promotor_base(
+                estrutura_promotor=estrutura_promotor,
+                metas=_empty_if_none(metas),
+                indicadores=_empty_if_none(indicadores),
+            )
+        elif dim_rotas is not None:
+            promotor_base = build_promotor_base(
+                estrutura_promotor=dim_rotas,
+                metas=_empty_if_none(metas),
+                indicadores=_empty_if_none(indicadores),
+            )
+        else:
+            raise ValueError("promotor_base ou estrutura_promotor/dim_rotas devem ser informados")
 
-    base = base.merge(_build_kpi_metrics(metas, indicadores, "RED", "RED"), on="ChaveCentroRota", how="left")
-    base = base.merge(_build_kpi_metrics(metas, indicadores, "RPT", "RPT"), on="ChaveCentroRota", how="left")
+    base = promotor_base.copy()
+    base["TipoRota"] = base["TipoRota"].fillna(base["Rota"].map(create_tipo_rota))
     base = base.merge(_prepare_aderencia(aderencia_red), on="ChaveCentroRota", how="left")
     base = base.merge(_prepare_peso(pesos, "RED", "PesoRED"), on="TipoRota", how="left")
     base = base.merge(_prepare_peso(pesos, "OOS", "PesoRPT"), on="TipoRota", how="left")
@@ -94,6 +228,17 @@ def build_promotor_final(
         calculate_performance(meta, realizado, "menor_melhor")
         for meta, realizado in zip(base["MetaRPT"], base["RealizadoRPT"], strict=False)
     ]
+    base["StatusRPT"] = [
+        _status_rpt(tipo_rota, meta, realizado, peso)
+        for tipo_rota, meta, realizado, peso in zip(
+            base["TipoRota"],
+            base["MetaRPT"],
+            base["RealizadoRPT"],
+            base["PesoRPT"],
+            strict=False,
+        )
+    ]
+    base.loc[base["StatusRPT"] == "Não se aplica", "PerformanceRPT"] = pd.NA
     base["StatusGatilhoRED"] = base["AderenciaRED"].map(_status_gatilho_red)
     base["AtingimentoRED"] = [
         _calculate_red_achievement(performance, peso, aderencia)
@@ -105,12 +250,22 @@ def build_promotor_final(
         )
     ]
     base["AtingimentoRPT"] = [
-        calculate_weighted_achievement(performance, peso)
-        for performance, peso in zip(base["PerformanceRPT"], base["PesoRPT"], strict=False)
+        _calculate_rpt_achievement(tipo_rota, performance, peso)
+        for tipo_rota, performance, peso in zip(
+            base["TipoRota"],
+            base["PerformanceRPT"],
+            base["PesoRPT"],
+            strict=False,
+        )
     ]
     base["AtingimentoTotal"] = [
-        sum_ignoring_nulls(red, rpt)
-        for red, rpt in zip(base["AtingimentoRED"], base["AtingimentoRPT"], strict=False)
+        _calculate_total_achievement(tipo_rota, red, rpt)
+        for tipo_rota, red, rpt in zip(
+            base["TipoRota"],
+            base["AtingimentoRED"],
+            base["AtingimentoRPT"],
+            strict=False,
+        )
     ]
     base["EscalaAtingida"] = apply_escalonada(base, escalonada)
     base["StatusPerformance"] = base["AtingimentoTotal"].map(classify_status_performance)
@@ -132,8 +287,10 @@ def build_promotor_final(
         "AtingimentoRED",
         "MetaRPT",
         "RealizadoRPT",
+        "FonteRealizadoRPT",
         "PerformanceRPT",
         "PesoRPT",
+        "StatusRPT",
         "AtingimentoRPT",
         "AtingimentoTotal",
         "EscalaAtingida",
@@ -170,6 +327,7 @@ def build_promotor_calculo(final: pd.DataFrame) -> pd.DataFrame:
         }
     )
     red["KPI"] = "RED"
+    red["StatusRPT"] = pd.NA
 
     rpt = final[
         [
@@ -181,6 +339,7 @@ def build_promotor_calculo(final: pd.DataFrame) -> pd.DataFrame:
             "RealizadoRPT",
             "PerformanceRPT",
             "PesoRPT",
+            "StatusRPT",
             "AtingimentoRPT",
         ]
     ].rename(
@@ -206,6 +365,7 @@ def build_promotor_calculo(final: pd.DataFrame) -> pd.DataFrame:
         "Realizado",
         "Performance",
         "Peso",
+        "StatusRPT",
         "Atingimento",
         "AderenciaRED",
         "StatusGatilhoRED",
@@ -215,46 +375,93 @@ def build_promotor_calculo(final: pd.DataFrame) -> pd.DataFrame:
 
 def _load_inputs(paths_config: PathsConfig) -> dict[str, pd.DataFrame]:
     staging_dir = paths_config.values["processed"]["staging"]
-    dimensions_dir = paths_config.values["processed"]["dimensions"]
+    indicadores_consolidado = staging_dir / "stg_indicadores_consolidado.csv"
     return {
         "metas": read_csv(staging_dir / "stg_metas.csv"),
-        "indicadores": read_csv(staging_dir / "stg_indicadores.csv"),
-        "agentes_promotor": read_csv(staging_dir / "stg_agentes_promotor.csv"),
-        "dim_rotas": read_csv(dimensions_dir / "dim_rotas_promotor.csv"),
+        "indicadores": read_csv(
+            indicadores_consolidado if indicadores_consolidado.exists() else staging_dir / "stg_indicadores.csv"
+        ),
+        "estrutura_promotor": read_csv(staging_dir / "stg_estrutura_promotor.csv"),
         "aderencia_red": read_csv(staging_dir / "stg_aderencia_red.csv"),
         "pesos": read_csv(staging_dir / "stg_pesos.csv"),
         "escalonada": read_csv(staging_dir / "stg_escalonada_promotor.csv"),
     }
 
 
-def _build_kpi_metrics(
-    metas: pd.DataFrame,
-    indicadores: pd.DataFrame,
-    source_kpi: str,
-    output_suffix: str,
-) -> pd.DataFrame:
-    meta = _first_by_key(
+def _prepare_estrutura_base(estrutura_promotor: pd.DataFrame) -> pd.DataFrame:
+    selected_columns = [
+        column
+        for column in [
+            "ChaveCentroRota",
+            "UF",
+            "Gerencia",
+            "Supervisor",
+            "Centro",
+            "Rota",
+            "TipoRota",
+            "UnidadeOriginal",
+            "FonteEstrutura",
+            "MetaRED",
+            "RealizadoRED",
+            "MetaRPT",
+            "RealizadoRPT",
+        ]
+        if column in estrutura_promotor.columns
+    ]
+    base = estrutura_promotor[selected_columns].copy()
+    base = base.rename(
+        columns={
+            "MetaRED": "MetaREDEstruturaOriginal",
+            "RealizadoRED": "RealizadoREDEstruturaOriginal",
+            "MetaRPT": "MetaRPTEstruturaOriginal",
+            "RealizadoRPT": "RealizadoRPTEstruturaOriginal",
+        }
+    )
+    if "TipoRota" not in base.columns:
+        base["TipoRota"] = base["Rota"].map(create_tipo_rota)
+    base = base.dropna(subset=["ChaveCentroRota"])
+    return base.drop_duplicates(subset=["ChaveCentroRota"]).reset_index(drop=True)
+
+
+def _build_meta_metrics(metas: pd.DataFrame, source_kpi: str, output_suffix: str) -> pd.DataFrame:
+    if metas.empty or "KPI" not in metas.columns:
+        return pd.DataFrame(columns=["ChaveCentroRota", f"Meta{output_suffix}"])
+    return _first_by_key(
         metas[metas["KPI"] == source_kpi],
         value_column="Meta",
         output_column=f"Meta{output_suffix}",
     )
-    realizado_indicadores = _first_by_key(
+
+
+def _build_realizado_metrics(indicadores: pd.DataFrame, source_kpi: str, output_suffix: str) -> pd.DataFrame:
+    if indicadores.empty or "KPI" not in indicadores.columns:
+        return pd.DataFrame(columns=["ChaveCentroRota", f"Realizado{output_suffix}"])
+    value_column = "REALIZADO" if "REALIZADO" in indicadores.columns else "Realizado"
+    if value_column not in indicadores.columns:
+        return pd.DataFrame(columns=["ChaveCentroRota", f"Realizado{output_suffix}"])
+    return _first_by_key(
         indicadores[indicadores["KPI"] == source_kpi],
-        value_column="REALIZADO",
-        output_column=f"Realizado{output_suffix}Indicadores",
-    )
-    realizado_metas = _first_by_key(
-        metas[metas["KPI"] == source_kpi],
-        value_column="RealizadoArquivoMetas",
-        output_column=f"Realizado{output_suffix}Metas",
+        value_column=value_column,
+        output_column=f"Realizado{output_suffix}",
     )
 
-    metrics = meta.merge(realizado_indicadores, on="ChaveCentroRota", how="outer")
-    metrics = metrics.merge(realizado_metas, on="ChaveCentroRota", how="outer")
-    metrics[f"Realizado{output_suffix}"] = metrics[f"Realizado{output_suffix}Indicadores"].combine_first(
-        metrics[f"Realizado{output_suffix}Metas"]
-    )
-    return metrics[["ChaveCentroRota", f"Meta{output_suffix}", f"Realizado{output_suffix}"]]
+
+def _source_status(source_name: str, red_value: object, rpt_value: object) -> str:
+    if not pd.isna(red_value) and not pd.isna(rpt_value):
+        return source_name
+    if not pd.isna(red_value):
+        return f"{source_name} parcial RED"
+    if not pd.isna(rpt_value):
+        return f"{source_name} parcial RPT"
+    return "Nao encontrada"
+
+
+def _single_source_status(source_name: str, value: object, missing_status: str) -> str:
+    return source_name if not pd.isna(value) else missing_status
+
+
+def _empty_if_none(dataframe: pd.DataFrame | None) -> pd.DataFrame:
+    return dataframe if dataframe is not None else pd.DataFrame()
 
 
 def _first_by_key(dataframe: pd.DataFrame, value_column: str, output_column: str) -> pd.DataFrame:
@@ -303,3 +510,31 @@ def _calculate_red_achievement(performance: object, peso: object, aderencia: obj
     if float(aderencia) < 0.85:
         return 0.0
     return calculate_weighted_achievement(performance, peso)
+
+
+def _status_rpt(tipo_rota: object, meta: object, realizado: object, peso: object) -> str:
+    if tipo_rota != "PA":
+        return "Não se aplica"
+    if pd.isna(peso):
+        return "Sem peso RPT"
+    if float(peso) == 0:
+        return "Não se aplica"
+    if pd.isna(meta):
+        return "Sem meta RPT"
+    if pd.isna(realizado):
+        return "Sem fonte de realizado RPT"
+    return "Calculável"
+
+
+def _calculate_rpt_achievement(tipo_rota: object, performance: object, peso: object) -> float | None:
+    if tipo_rota != "PA":
+        return 0.0
+    if not pd.isna(peso) and float(peso) == 0:
+        return 0.0
+    return calculate_weighted_achievement(performance, peso)
+
+
+def _calculate_total_achievement(tipo_rota: object, atingimento_red: object, atingimento_rpt: object) -> float | None:
+    if tipo_rota != "PA":
+        return sum_ignoring_nulls(atingimento_red)
+    return sum_ignoring_nulls(atingimento_red, atingimento_rpt)

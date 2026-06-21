@@ -27,8 +27,8 @@ ALIASES = {
 }
 
 
-def transform_agentes(dataframe: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    """Padroniza agentes e gera recortes de Promotor."""
+def transform_agentes(dataframe: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Padroniza agentes e gera recorte de Promotor."""
 
     result = rename_columns_by_aliases(dataframe, ALIASES)
     require_columns(result, ["Centro", "Rota", "DescricaoFuncao"], "agentes")
@@ -43,14 +43,7 @@ def transform_agentes(dataframe: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFra
     result["Figura"] = result["DescricaoFuncao"].map(_classify_figure)
 
     promotor = result[result["Figura"] == "PROMOTOR DE VENDAS"].copy()
-    dim_rotas = (
-        promotor.dropna(subset=["ChaveCentroRota"])
-        .drop_duplicates(subset=["ChaveCentroRota"])
-        [["ChaveCentroRota", "Centro", "Rota", "TipoRota"]]
-        .sort_values("ChaveCentroRota")
-        .reset_index(drop=True)
-    )
-    return result, promotor, dim_rotas
+    return result, promotor
 
 
 def _classify_figure(descricao_funcao: object) -> str:
@@ -66,14 +59,12 @@ def build_staging_agentes(paths_config_path: str | Path | None = None) -> list[P
     input_file = first_excel_file(paths_config.values["raw_sources"], "agentes")
 
     dataframe = pd.read_excel(input_file, engine="openpyxl")
-    agentes, promotor, dim_rotas = transform_agentes(dataframe)
+    agentes, promotor = transform_agentes(dataframe)
 
     staging_dir = paths_config.values["processed"]["staging"]
-    dimensions_dir = paths_config.values["processed"]["dimensions"]
     outputs = [
         write_csv(agentes, staging_dir / "stg_agentes.csv"),
         write_csv(promotor, staging_dir / "stg_agentes_promotor.csv"),
-        write_csv(dim_rotas, dimensions_dir / "dim_rotas_promotor.csv"),
     ]
 
     logger.info(
@@ -83,7 +74,6 @@ def build_staging_agentes(paths_config_path: str | Path | None = None) -> list[P
             "linhas_lidas": len(dataframe),
             "linhas_salvas": len(agentes),
             "linhas_promotor": len(promotor),
-            "rotas_promotor": len(dim_rotas),
         },
     )
     return outputs

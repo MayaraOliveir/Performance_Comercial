@@ -6,19 +6,16 @@ import pandas as pd
 
 
 def find_escalonada_value(atingimento_total: object, escalonada: pd.DataFrame) -> float | None:
-    """Busca a escala atingida pela faixa correspondente."""
+    """Busca a escala atingida como VLOOKUP aproximado."""
 
     if pd.isna(atingimento_total):
         return None
 
     value = float(atingimento_total)
-    matches = escalonada[
-        (escalonada["FaixaDe"] <= value)
-        & (value <= escalonada["FaixaAte"])
-    ]
+    matches = escalonada[escalonada["FaixaDe"] <= value].sort_values("FaixaDe")
     if matches.empty:
         return None
-    return float(matches.iloc[0]["EscalaAtingida"])
+    return float(matches.iloc[-1]["EscalaAtingida"])
 
 
 def apply_escalonada(dataframe: pd.DataFrame, escalonada: pd.DataFrame) -> pd.Series:

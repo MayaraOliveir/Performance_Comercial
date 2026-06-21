@@ -43,4 +43,17 @@ def test_find_escalonada_value_returns_matching_range() -> None:
     )
 
     assert find_escalonada_value(0.85, escalonada) == 0.7
-    assert find_escalonada_value(1.5, escalonada) is None
+    assert find_escalonada_value(1.5, escalonada) == 0.8
+
+
+def test_find_escalonada_value_uses_largest_faixa_de_less_or_equal_value() -> None:
+    escalonada = pd.DataFrame(
+        {
+            "FaixaDe": [0.0, 0.8, 1.0],
+            "FaixaAte": [0.7, 0.9, 1.1],
+            "EscalaAtingida": [0.0, 0.7, 1.0],
+        }
+    )
+
+    assert find_escalonada_value(0.95, escalonada) == 0.7
+    assert find_escalonada_value(1.5, escalonada) == 1.0

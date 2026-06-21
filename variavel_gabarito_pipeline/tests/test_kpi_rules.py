@@ -30,9 +30,9 @@ def test_calculate_performance_menor_melhor() -> None:
     assert calculate_performance(meta=5, realizado=10, tipo_calculo="menor_melhor") == 0.5
 
 
-def test_sum_ignoring_nulls_preserves_null_when_all_missing() -> None:
+def test_sum_ignoring_nulls_behaves_like_excel_sum() -> None:
     assert sum_ignoring_nulls(0.2, None, 0.3) == 0.5
-    assert sum_ignoring_nulls(None, None) is None
+    assert sum_ignoring_nulls(None, None) == 0.0
 
 
 def test_classify_status_performance() -> None:

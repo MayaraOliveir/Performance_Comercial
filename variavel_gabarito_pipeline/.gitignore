@@ -24,6 +24,14 @@ dist/
 ~$*.xlsm
 ~$*.xls
 
+# Temporary investigation scripts (keep root clean)
+investigar_*.py
+rastrear_*.py
+ler_*.py
+gerar_*.py
+temp_*.py
+*_temp.py
+
 # Pipeline generated data
 data/raw/**/*
 !data/raw/**/

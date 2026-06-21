@@ -15,6 +15,9 @@ def test_gabarito_dash_becomes_null_and_sem_calculo() -> None:
 
     assert pd.isna(result.loc[0, "AtingimentoTotalGabarito"])
     assert result.loc[0, "StatusValorGabarito"] == "Sem cálculo no gabarito"
+    assert result.loc[0, "UnidadeOriginal"] == "CRBC"
+    assert result.loc[0, "Centro"] == "CRBC"
+    assert result.loc[0, "ChaveCentroRota"] == "CRBCVA300"
 
 
 def test_status_valor_gabarito_detects_calculated_value() -> None:

@@ -14,9 +14,13 @@ def build_promotor_diagnostics(row: pd.Series) -> str:
     _append_if_missing(diagnostics, row, "RealizadoRED", "Sem realizado RED")
     _append_if_missing(diagnostics, row, "AderenciaRED", "Sem aderência RED")
     _append_if_missing(diagnostics, row, "PesoRED", "Sem peso RED")
-    _append_if_missing(diagnostics, row, "MetaRPT", "Sem meta RPT")
-    _append_if_missing(diagnostics, row, "RealizadoRPT", "Sem realizado RPT")
-    _append_if_missing(diagnostics, row, "PesoRPT", "Sem peso RPT")
+    if row.get("TipoRota") == "PA":
+        _append_if_missing(diagnostics, row, "MetaRPT", "Sem meta RPT")
+        _append_if_missing(diagnostics, row, "PesoRPT", "Sem peso RPT")
+        if row.get("FonteRealizadoRPT") == "fonte_rpt_nao_encontrada" and row.get("StatusRPT") != "Não se aplica":
+            diagnostics.append("Sem fonte RealizadoRPT")
+        elif row.get("StatusRPT") != "Não se aplica":
+            _append_if_missing(diagnostics, row, "RealizadoRPT", "Sem realizado RPT")
 
     if not pd.isna(row.get("AtingimentoTotal")) and pd.isna(row.get("EscalaAtingida")):
         diagnostics.append("Sem faixa escalonada")

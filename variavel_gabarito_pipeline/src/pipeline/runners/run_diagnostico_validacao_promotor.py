@@ -8,6 +8,7 @@ import pandas as pd
 
 from pipeline.core.logger import configure_logger
 from pipeline.core.paths import load_paths_config
+from pipeline.figures.promotor_vendas import summarize_fonte_rpt_promotor
 from pipeline.io.csv_reader import read_csv
 from pipeline.io.csv_writer import write_csv
 
@@ -35,8 +36,10 @@ DETAIL_COLUMNS = [
     "AtingimentoRED",
     "MetaRPT",
     "RealizadoRPT",
+    "FonteRealizadoRPT",
     "PerformanceRPT",
     "PesoRPT",
+    "StatusRPT",
     "AtingimentoRPT",
 ]
 
@@ -95,6 +98,8 @@ CLASSIFIED_DIFFERENCE_COLUMNS = [
     "RealizadoRED",
     "MetaRPT",
     "RealizadoRPT",
+    "FonteRealizadoRPT",
+    "StatusRPT",
 ]
 
 SEM_FAIXA_COLUMNS = [
@@ -126,9 +131,12 @@ def run() -> list[Path]:
     so_gabarito = build_so_gabarito_report(enriched)
     so_python = build_so_python_report(enriched)
     resumo = build_summary(enriched)
-    diferentes_classificado = build_classified_differences(enriched)
+    diferentes_classificado = build_classified_differences(enriched, data["metas"])
     sem_faixa = build_sem_faixa_report(enriched)
     resumo_tipo_diferenca = build_difference_type_summary(diferentes_classificado)
+    resumo_fonte_rpt = summarize_fonte_rpt_promotor(data["fat_final"], data["validacao"])
+    resumo_explicado = build_explained_differences_summary(data["validacao"], diferentes_classificado)
+    diagnostico_fssapa186 = build_fssapa186_diagnostic(data, enriched)
 
     outputs = [
         write_csv(diferentes, validation_dir / "diagnostico_diferentes_promotor.csv"),
@@ -139,6 +147,9 @@ def run() -> list[Path]:
         write_csv(diferentes_classificado, validation_dir / "diagnostico_diferentes_classificado.csv"),
         write_csv(sem_faixa, validation_dir / "diagnostico_sem_faixa_escalonada.csv"),
         write_csv(resumo_tipo_diferenca, validation_dir / "resumo_tipo_diferenca.csv"),
+        write_csv(resumo_fonte_rpt, validation_dir / "resumo_fonte_rpt_promotor.csv"),
+        write_csv(resumo_explicado, validation_dir / "resumo_diferencas_promotor_explicado.csv"),
+        write_csv(diagnostico_fssapa186, validation_dir / "diagnostico_fssapa186.csv"),
     ]
 
     print_terminal_summary(diferentes, python_sem, so_gabarito)
@@ -195,8 +206,10 @@ def build_enriched_validation(validacao: pd.DataFrame, fat_final: pd.DataFrame) 
         "AtingimentoRED",
         "MetaRPT",
         "RealizadoRPT",
+        "FonteRealizadoRPT",
         "PerformanceRPT",
         "PesoRPT",
+        "StatusRPT",
         "AtingimentoRPT",
     ]
     available_detail_columns = [column for column in detail_columns if column in fat_final.columns]
@@ -251,20 +264,22 @@ def build_summary(enriched: pd.DataFrame) -> pd.DataFrame:
     )
 
 
-def build_classified_differences(enriched: pd.DataFrame) -> pd.DataFrame:
+def build_classified_differences(enriched: pd.DataFrame, metas: pd.DataFrame | None = None) -> pd.DataFrame:
     """Classifica se a divergencia esta no atingimento ou apenas na escala."""
 
     report = enriched[enriched["StatusComparacao"] == "Diferente"].copy()
     report["AbsDifAtingimento"] = report["DifAtingimentoTotal"].abs()
     report["AbsDifEscala"] = report["DifEscalaAtingida"].abs()
     report["TipoDiferenca"] = [
-        classify_difference_type(abs_atingimento, abs_escala)
-        for abs_atingimento, abs_escala in zip(
+        classify_difference_type(abs_atingimento, abs_escala, status_rpt)
+        for abs_atingimento, abs_escala, status_rpt in zip(
             report["AbsDifAtingimento"],
             report["AbsDifEscala"],
+            report.get("StatusRPT", pd.Series(index=report.index)),
             strict=False,
         )
     ]
+    report = apply_meta_source_classification(report, metas)
     report = report.sort_values(
         ["TipoDiferenca", "DifAtingimentoTotal", "DifEscalaAtingida"],
         ascending=[True, False, False],
@@ -273,11 +288,46 @@ def build_classified_differences(enriched: pd.DataFrame) -> pd.DataFrame:
     return select_existing_columns(report, CLASSIFIED_DIFFERENCE_COLUMNS)
 
 
-def classify_difference_type(abs_dif_atingimento: object, abs_dif_escala: object) -> str:
+def apply_meta_source_classification(
+    report: pd.DataFrame,
+    metas: pd.DataFrame | None,
+) -> pd.DataFrame:
+    """Reclassifica divergencias residuais usando a fonte oficial de metas."""
+
+    if metas is None or metas.empty or "ChaveCentroRota" not in metas.columns:
+        return report
+
+    result = report.copy()
+    metas_by_key = metas.groupby("ChaveCentroRota")["KPI"].agg(lambda values: set(values.dropna())).to_dict()
+    for index, row in result.iterrows():
+        current_type = row.get("TipoDiferenca")
+        if current_type == "Diferença por ausência de fonte RealizadoRPT":
+            continue
+        if row.get("StatusComparacao") == "OK":
+            continue
+
+        key = row.get("ChaveCentroRota")
+        kpis = metas_by_key.get(key)
+        if not kpis:
+            result.at[index, "TipoDiferenca"] = "Diferença por meta não localizada na fonte oficial"
+        elif "RPT" not in kpis:
+            result.at[index, "TipoDiferenca"] = "Diferença por MetaRPT ausente na fonte oficial"
+        else:
+            result.at[index, "TipoDiferenca"] = "Diferença fina de cálculo RED"
+    return result
+
+
+def classify_difference_type(
+    abs_dif_atingimento: object,
+    abs_dif_escala: object,
+    status_rpt: object = None,
+) -> str:
     """Classifica o tipo de diferenca usando tolerancia numerica."""
 
     atingimento = 0 if pd.isna(abs_dif_atingimento) else float(abs_dif_atingimento)
     escala = 0 if pd.isna(abs_dif_escala) else float(abs_dif_escala)
+    if status_rpt == "Sem fonte de realizado RPT" and atingimento > TOLERANCE:
+        return "Diferença por ausência de fonte RealizadoRPT"
     if atingimento <= TOLERANCE and escala > TOLERANCE:
         return "Diferença só na escala"
     if atingimento > TOLERANCE:
@@ -313,6 +363,99 @@ def build_difference_type_summary(diferentes_classificado: pd.DataFrame) -> pd.D
         .sort_values(["TipoDiferenca", "QtdRotas"], ascending=[True, False])
         .reset_index(drop=True)
     )
+
+
+def build_explained_differences_summary(
+    validacao: pd.DataFrame,
+    diferentes_classificado: pd.DataFrame,
+) -> pd.DataFrame:
+    """Resume a validacao em categorias explicadas de diferenca."""
+
+    rows: list[dict[str, object]] = []
+    ok_count = int(validacao["StatusComparacao"].eq("OK").sum())
+    rows.append({"Categoria": "OK", "QtdRotas": ok_count})
+
+    expected_categories = [
+        "Diferença por ausência de fonte RealizadoRPT",
+        "Diferença por meta não localizada na fonte oficial",
+        "Diferença por MetaRPT ausente na fonte oficial",
+        "Diferença fina de cálculo RED",
+    ]
+    counts = diferentes_classificado["TipoDiferenca"].value_counts(dropna=False).to_dict()
+    for category in expected_categories:
+        rows.append({"Categoria": category, "QtdRotas": int(counts.get(category, 0))})
+
+    extra_categories = [category for category in counts if category not in expected_categories]
+    for category in extra_categories:
+        rows.append({"Categoria": category, "QtdRotas": int(counts[category])})
+
+    rows.append({"Categoria": "total_geral", "QtdRotas": int(len(validacao))})
+    rows.append({"Categoria": "total_diferencas", "QtdRotas": int(len(diferentes_classificado))})
+    return pd.DataFrame(rows)
+
+
+def build_fssapa186_diagnostic(data: dict[str, pd.DataFrame], enriched: pd.DataFrame) -> pd.DataFrame:
+    """Monta diagnostico especifico da rota FSSAPA186."""
+
+    key = "FSSAPA186"
+    rows: list[dict[str, object]] = []
+    route_filter = {"Centro": "FSSA", "Rota": "PA186"}
+
+    route = enriched[enriched["ChaveCentroRota"] == key].head(1)
+    if not route.empty:
+        row = route.iloc[0]
+        rows.append(
+            {
+                "Secao": "componentes_python_vs_gabarito",
+                "ChaveCentroRota": key,
+                "Centro": row.get("Centro"),
+                "Rota": row.get("Rota"),
+                "MetaRED": row.get("MetaRED"),
+                "RealizadoRED": row.get("RealizadoRED"),
+                "AderenciaRED": row.get("AderenciaRED"),
+                "PesoRED": row.get("PesoRED"),
+                "PerformanceRED": row.get("PerformanceRED"),
+                "AtingimentoRED": row.get("AtingimentoRED"),
+                "AtingimentoTotal": row.get("AtingimentoTotal"),
+                "AtingimentoTotalGabarito": row.get("AtingimentoTotalGabarito"),
+                "DifAtingimentoTotal": row.get("DifAtingimentoTotal"),
+            }
+        )
+
+    rows.extend(_rows_from_source("stg_metas", data["metas"], route_filter))
+    rows.extend(_rows_from_source("stg_indicadores", data["indicadores"], route_filter))
+    rows.extend(_rows_from_source("stg_aderencia_red", data["aderencia_red"], route_filter))
+    return pd.DataFrame(rows)
+
+
+def _rows_from_source(
+    section: str,
+    dataframe: pd.DataFrame,
+    route_filter: dict[str, str],
+) -> list[dict[str, object]]:
+    if dataframe.empty:
+        return []
+
+    result = dataframe.copy()
+    if "ChaveCentroRota" in result.columns:
+        filtered = result[result["ChaveCentroRota"] == "FSSAPA186"].copy()
+    elif {"Centro", "Rota"}.issubset(result.columns):
+        filtered = result[
+            (result["Centro"] == route_filter["Centro"])
+            & (result["Rota"] == route_filter["Rota"])
+        ].copy()
+    else:
+        filtered = result.iloc[0:0].copy()
+
+    rows: list[dict[str, object]] = []
+    for _, source_row in filtered.iterrows():
+        row = {"Secao": section}
+        for column, value in source_row.items():
+            row[column] = value
+        rows.append(row)
+    if not rows:
+        rows.append({"Secao": section, "ChaveCentroRota": "FSSAPA186", "Observacao": "nenhuma_linha_encontrada"})
+    return rows
 
 
 def print_terminal_summary(

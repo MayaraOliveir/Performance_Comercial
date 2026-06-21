@@ -2,4 +2,5 @@ figuras:
   promotor_vendas:
     nome: PROMOTOR DE VENDAS
     ativo: true
+    allow_gabarito_fallback_estrutura: true
     kpis: []
